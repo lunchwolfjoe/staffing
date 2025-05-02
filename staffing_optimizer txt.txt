@@ -1,0 +1,1263 @@
+import streamlit as st
+import pandas as pd
+import pulp
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from typing import Dict, List, Tuple, Optional
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def categorize_shift_pattern(pattern: str, days: List[str], pattern_data: Dict[str, int]) -> str:
+    """
+    Categorizes a shift pattern based on its weekend days.
+    
+    Args:
+        pattern (str): The pattern identifier (e.g., 'DA', 'NB')
+        days (List[str]): List of days in order
+        pattern_data (Dict[str, int]): Dictionary mapping days to 1/0 for work/off
+        
+    Returns:
+        str: Category identifier ('0', '1', '2', '3' for day shifts, '0', '1', '2', '3' for night shifts)
+    """
+    shift_type = pattern[0]  # 'D' or 'N'
+    
+    if shift_type == 'D':
+        # For day shifts, weekends are Sat and Sun
+        weekend_days = ['Sat', 'Sun']
+    else:
+        # For night shifts, weekends are Fri, Sat, Sun
+        weekend_days = ['Fri', 'Sat', 'Sun']
+    
+    # Count weekend days worked
+    weekend_work_days = sum(pattern_data[day] for day in weekend_days)
+    
+    # Return category based on number of weekend days worked
+    return str(weekend_work_days)
+
+def create_patterns_df() -> pd.DataFrame:
+    """
+    Creates a DataFrame containing base staffing patterns.
+    Pattern A (DA/NA) will be further split into MET variations in a second phase.
+    """
+    # Define base patterns (1=scheduled work day, 0=off day)
+    base_patterns = {
+        'A': [1, 1, 1, 1, 0, 0, 0],  # Sun-Wed
+        'B': [0, 0, 0, 1, 1, 1, 0],  # Thu-Sat
+        'C': [0, 1, 1, 1, 1, 0, 0],  # Mon-Thu
+        'D': [0, 0, 1, 1, 1, 1, 0],  # Tue-Fri
+        'E': [0, 1, 1, 1, 1, 1, 0],  # Mon-Fri
+        'F': [0, 1, 1, 1, 1, 1, 0],  # Mon-Fri
+        'G': [1, 1, 0, 0, 1, 1, 0],  # Sun-Mon, Thu-Fri
+        'H': [1, 1, 0, 1, 1, 0, 0],  # Sun-Mon, Wed-Thu
+        'I': [1, 0, 1, 1, 1, 0, 0],  # Sun, Tue-Thu
+        'J': [0, 1, 0, 1, 1, 0, 1],  # Mon, Wed-Thu, Sat
+        'K': [0, 1, 1, 0, 1, 1, 0],  # Mon-Tue, Thu-Fri
+        'L': [1, 1, 1, 0, 0, 0, 1],  # Sun-Tue, Sat
+        'M': [0, 0, 1, 1, 1, 0, 1],  # Tue-Thu, Sat
+        'N': [1, 0, 0, 0, 1, 1, 1],  # Sun, Thu-Sat
+        'O': [1, 1, 0, 0, 0, 1, 1],  # Sun-Mon, Fri-Sat
+        'P': [1, 1, 1, 1, 0, 0, 0],  # Sun-Wed
+        'Q': [0, 1, 1, 1, 1, 0, 0],  # Mon-Thu
+        'R': [0, 1, 1, 0, 1, 1, 0],  # Mon-Tue, Thu-Fri
+        'S': [1, 0, 0, 1, 1, 1, 0],  # Sun, Wed-Fri
+        'T': [1, 1, 1, 1, 0, 0, 0],  # Sun-Wed
+        'U': [1, 1, 0, 0, 1, 1, 0],  # Sun-Mon, Thu-Fri
+        'V': [1, 0, 1, 1, 0, 0, 1],  # Sun, Tue-Wed, Sat
+        'W': [1, 1, 1, 0, 0, 1, 0],  # Sun-Tue, Fri
+        'X': [0, 1, 0, 0, 1, 1, 1],  # Mon, Thu-Sat
+        'Y': [0, 0, 1, 1, 1, 0, 1],  # Tue-Thu, Sat
+        'Z': [0, 1, 1, 1, 0, 1, 0],  # Mon-Wed, Fri
+        '1': [0, 1, 1, 1, 0, 1, 0],  # Mon-Wed, Fri
+        '2': [1, 1, 0, 0, 1, 0, 1],  # Sun-Mon, Thu, Sat
+        '3': [0, 1, 1, 1, 0, 0, 1],  # Mon-Wed, Sat
+        '4': [0, 1, 0, 1, 1, 1, 0],  # Mon, Wed-Fri
+        '5': [1, 1, 1, 0, 1, 0, 0],  # Sun-Tue, Thu
+    }
+    
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    shifts = ['D', 'N']  # Day and Night shifts
+    
+    # Create base patterns
+    patterns_data = []
+    for shift in shifts:
+        for pattern_code, pattern in base_patterns.items():
+            pattern_id = f"{shift}{pattern_code}"
+            pattern_row = {
+                'Pattern': pattern_id,
+                'Shift': 'Day' if shift == 'D' else 'Night',
+                'Base_Pattern': pattern_code
+            }
+            # Add scheduled days
+            for i, day in enumerate(days):
+                pattern_row[day] = pattern[i]
+            patterns_data.append(pattern_row)
+    
+    df = pd.DataFrame(patterns_data)
+    
+    # Calculate working days
+    df['Days'] = df[days].sum(axis=1)
+    
+    # Calculate weekend days based on shift type
+    df['Weekend_Days'] = df.apply(lambda row: 
+        sum(row[['Sat', 'Sun']]) if row['Shift'] == 'Day' else 
+        sum(row[['Fri', 'Sat', 'Sun']]), axis=1)
+    
+    # Categorize each pattern
+    df['Weekend_Category'] = df.apply(lambda row: 
+        categorize_shift_pattern(row['Pattern'], days, {day: row[day] for day in days}), axis=1)
+    
+    # Calculate cost multiplier - will be updated by UI settings
+    df['Cost_Multiplier'] = 1.0
+    
+    return df
+
+def filter_patterns(patterns_df: pd.DataFrame, filter_type: str) -> List[str]:
+    """
+    Filters patterns based on the specified criteria.
+    
+    Args:
+        patterns_df (pd.DataFrame): DataFrame containing pattern information
+        filter_type (str): Type of filter to apply ("All patterns", "4-day patterns", "5-day patterns")
+    
+    Returns:
+        List[str]: List of pattern identifiers that match the filter criteria
+    """
+    if filter_type == "4-day patterns":
+        return patterns_df[patterns_df['Days'] == 4]['Pattern'].tolist()
+    elif filter_type == "5-day patterns":
+        return patterns_df[patterns_df['Days'] == 5]['Pattern'].tolist()
+    return patterns_df['Pattern'].tolist()
+
+def validate_requirements(day_requirements: Dict[str, int], night_requirements: Dict[str, int]) -> bool:
+    """
+    Validates staffing requirements to ensure they are reasonable.
+    
+    Args:
+        day_requirements (Dict[str, int]): Day shift requirements by day
+        night_requirements (Dict[str, int]): Night shift requirements by day
+    
+    Returns:
+        bool: True if requirements are valid, False otherwise
+    """
+    if not all(isinstance(v, (int, float)) and v >= 0 for v in day_requirements.values()):
+        raise ValueError("Day shift requirements must be non-negative numbers")
+    if not all(isinstance(v, (int, float)) and v >= 0 for v in night_requirements.values()):
+        raise ValueError("Night shift requirements must be non-negative numbers")
+    return True
+
+def optimize_staffing(patterns_df: pd.DataFrame, selected_patterns: List[str], 
+                     day_requirements: Dict[str, int], night_requirements: Dict[str, int], 
+                     optimize_cost: bool = True) -> Tuple[pd.DataFrame, Dict[str, float], Dict[str, float]]:
+    """
+    Optimizes staffing patterns to meet requirements while minimizing cost or headcount.
+    Phase 1: Optimizes base pattern staffing.
+    """
+    model = pulp.LpProblem("Staffing_Optimization", pulp.LpMinimize)
+    
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    
+    # Find peak demands
+    peak_day_demand = max(day_requirements.values())
+    peak_night_demand = max(night_requirements.values())
+    
+    # Calculate minimum staff needed
+    min_day_staff = int(peak_day_demand * 1.4)
+    min_night_staff = int(peak_night_demand * 1.4)
+    max_staff = max(min_day_staff, min_night_staff)
+    
+    # Pattern variables
+    pattern_vars = {
+        pattern: pulp.LpVariable(f'Pattern_{pattern}', 
+                               lowBound=0,
+                               upBound=max_staff,
+                               cat='Integer')
+        for pattern in selected_patterns
+    }
+    
+    # Staffing requirements constraints
+    for day in days:
+        # Day shift
+        model += (
+            pulp.lpSum(
+                patterns_df[patterns_df['Pattern'] == p][day].iloc[0] * pattern_vars[p]
+                for p in selected_patterns
+                if patterns_df[patterns_df['Pattern'] == p]['Shift'].iloc[0] == 'Day'
+            ) >= day_requirements[day]
+        )
+        
+        # Night shift
+        model += (
+            pulp.lpSum(
+                patterns_df[patterns_df['Pattern'] == p][day].iloc[0] * pattern_vars[p]
+                for p in selected_patterns
+                if patterns_df[patterns_df['Pattern'] == p]['Shift'].iloc[0] == 'Night'
+            ) >= night_requirements[day]
+        )
+    
+    # Group patterns by base pattern (e.g., DA, NA) for balancing
+    base_patterns = {}
+    max_diff_vars = []  # Keep track of max difference variables
+    
+    for pattern in selected_patterns:
+        base = pattern[:2]  # Get shift and base pattern code
+        if base not in base_patterns:
+            base_patterns[base] = []
+        base_patterns[base].append(pattern)
+    
+    # Balance constraints for each base pattern group
+    for base, patterns in base_patterns.items():
+        if len(patterns) > 1:
+            # Ensure relatively even distribution within each pattern group
+            avg_var = pulp.LpVariable(f'Avg_{base}', lowBound=0)
+            max_diff = pulp.LpVariable(f'MaxDiff_{base}', lowBound=0)
+            max_diff_vars.append(max_diff)  # Add to our list
+            
+            for pattern in patterns:
+                model += pattern_vars[pattern] - avg_var <= max_diff
+                model += avg_var - pattern_vars[pattern] <= max_diff
+    
+    # Objective function
+    if optimize_cost:
+        model += (
+            # Base cost
+            pulp.lpSum(
+                pattern_vars[p] * patterns_df[patterns_df['Pattern'] == p]['Cost_Multiplier'].iloc[0]
+                for p in selected_patterns
+            ) +
+            # Pattern balance penalty
+            100 * pulp.lpSum(max_diff_vars)  # Use our collected max_diff variables
+        )
+    else:
+        model += (
+            # Minimize total headcount
+            pulp.lpSum(pattern_vars.values()) +
+            # Pattern balance penalty
+            100 * pulp.lpSum(max_diff_vars)  # Use our collected max_diff variables
+        )
+    
+    # Solve
+    solver = pulp.PULP_CBC_CMD(msg=0)
+    solver.options = ['maxSeconds 300', 'allowableGap 0.01']
+    status = model.solve(solver)
+    
+    if status != pulp.LpStatusOptimal:
+        raise ValueError(f"Optimization failed with status: {pulp.LpStatus[status]}")
+    
+    # Get results
+    results = []
+    for pattern in selected_patterns:
+        if pulp.value(pattern_vars[pattern]) > 0:
+            pattern_data = patterns_df[patterns_df['Pattern'] == pattern].iloc[0].to_dict()
+            pattern_data['Employees'] = int(pulp.value(pattern_vars[pattern]))
+            results.append(pattern_data)
+    
+    results_df = pd.DataFrame(results)
+    
+    # Calculate staffing levels
+    day_staffing = {day: sum(
+        row['Employees'] * row[day]
+        for _, row in results_df.iterrows()
+        if row['Shift'] == 'Day'
+    ) for day in days}
+    
+    night_staffing = {day: sum(
+        row['Employees'] * row[day]
+        for _, row in results_df.iterrows()
+        if row['Shift'] == 'Night'
+    ) for day in days}
+    
+    return results_df, day_staffing, night_staffing
+
+def optimize_met_distribution(pattern_staff_dict: Dict[str, int], shift: str, day_requirements: Dict[str, int]) -> pd.DataFrame:
+    """
+    Optimizes the distribution of staff across MET days based on daily demand.
+    For each pattern, assigns staff to MET days (off days) with a goal to maximize flexibility
+    by spreading MET assignments across all days of the week.
+    
+    Args:
+        pattern_staff_dict: Dictionary mapping base patterns to number of staff
+        shift: 'Day' or 'Night'
+        day_requirements: Daily staffing requirements
+    
+    Returns:
+        DataFrame with MET day assignments for all patterns
+    """
+    if not pattern_staff_dict:
+        return pd.DataFrame()  # Return empty dataframe if no patterns
+    
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    # Map MET day numbers to actual days (using 1-based indexing to match pattern codes)
+    day_map = {1: 'Sun', 2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat'}
+    day_to_idx = {day: i for i, day in enumerate(days)}
+    
+    # Get off days for each pattern from the pattern's code
+    pattern_off_days = {
+        'A': ['Thu', 'Fri', 'Sat'],  # Sun-Wed pattern, off Thu-Sat
+        'B': ['Sun', 'Mon', 'Tue'],  # Thu-Sat pattern, off Sun-Tue
+        'C': ['Fri', 'Sat'],         # Mon-Thu pattern, off Fri-Sat
+        'D': ['Sun', 'Mon'],         # Tue-Fri pattern, off Sun-Mon
+        'E': ['Sat'],                # Mon-Fri pattern, off Sat
+        'F': ['Sat'],                # Mon-Fri pattern, off Sat
+        'G': ['Tue', 'Wed', 'Sat'],  # Sun-Mon, Thu-Fri pattern
+        'H': ['Tue', 'Fri', 'Sat'],  # Sun-Mon, Wed-Thu pattern
+        'I': ['Mon', 'Fri', 'Sat'],  # Sun, Tue-Thu pattern
+        'J': ['Tue', 'Fri'],         # Mon, Wed-Thu, Sat pattern
+        'K': ['Wed', 'Sat'],         # Mon-Tue, Thu-Fri pattern
+        'L': ['Wed', 'Thu', 'Fri'],  # Sun-Tue, Sat pattern
+        'M': ['Sun', 'Mon', 'Fri'],  # Tue-Thu, Sat pattern
+        'N': ['Mon', 'Tue', 'Wed'],  # Sun, Thu-Sat pattern
+        'O': ['Tue', 'Wed', 'Thu'],  # Sun-Mon, Fri-Sat pattern
+        'P': ['Thu', 'Fri', 'Sat'],  # Sun-Wed pattern
+        'Q': ['Fri', 'Sat'],         # Mon-Thu pattern
+        'R': ['Wed', 'Sat'],         # Mon-Tue, Thu-Fri pattern
+        'S': ['Mon', 'Tue'],         # Sun, Wed-Fri pattern
+        'T': ['Thu', 'Fri', 'Sat'],  # Sun-Wed pattern
+        'U': ['Tue', 'Wed', 'Sat'],  # Sun-Mon, Thu-Fri pattern
+        'V': ['Thu', 'Fri'],         # Sun, Tue-Wed, Sat pattern
+        'W': ['Wed', 'Thu', 'Sat'],  # Sun-Tue, Fri pattern
+        'X': ['Tue', 'Wed', 'Sun'],  # Mon, Thu-Sat pattern
+        'Y': ['Sun', 'Mon', 'Fri'],  # Tue-Thu, Sat pattern
+        'Z': ['Thu', 'Sat'],         # Mon-Wed, Fri pattern
+        '1': ['Thu', 'Sat'],         # Mon-Wed, Fri pattern
+        '2': ['Tue', 'Wed', 'Fri'],  # Sun-Mon, Thu, Sat pattern
+        '3': ['Thu', 'Fri'],         # Mon-Wed, Sat pattern
+        '4': ['Tue', 'Sat'],         # Mon, Wed-Fri pattern
+        '5': ['Wed', 'Fri', 'Sat'],  # Sun-Tue, Thu pattern
+    }
+    
+    all_met_results = []
+    
+    # Need global model to ensure maximizing coverage across all days
+    global_model = pulp.LpProblem(f"{shift}_Global_MET_Distribution", pulp.LpMinimize)
+    
+    # Track MET coverage by day across all patterns
+    met_day_coverage = {day: pulp.LpVariable(f'MET_{day}_Coverage', lowBound=0) for day in days}
+    
+    # Pattern-specific variables
+    pattern_met_vars = {}
+    
+    # For each pattern, create variables for MET day assignments
+    for pattern_code, staff_count in pattern_staff_dict.items():
+        if staff_count <= 0:
+            continue
+            
+        # Get off days that can be used for MET
+        off_days = pattern_off_days.get(pattern_code, [])
+        if not off_days:
+            continue  # Skip if no off days available for MET
+            
+        # Variables for each MET day option for this pattern
+        pattern_met_vars[pattern_code] = {
+            day_to_idx[day] + 1: pulp.LpVariable(f'MET_{pattern_code}_{day}', 
+                                   lowBound=0,
+                                   upBound=staff_count,
+                                   cat='Integer')
+            for day in off_days
+        }
+        
+        # All staff for this pattern must be assigned a MET day
+        global_model += pulp.lpSum(pattern_met_vars[pattern_code].values()) == staff_count
+    
+    # Calculate total MET coverage by day
+    for day in days:
+        day_idx = day_to_idx[day] + 1
+        global_model += met_day_coverage[day] == pulp.lpSum(
+            pattern_met_vars[pattern][day_idx] 
+            for pattern in pattern_met_vars 
+            if day_idx in pattern_met_vars[pattern]
+        )
+    
+    # Objective: maximize the minimum MET coverage across all days
+    # This will ensure more even distribution
+    min_coverage = pulp.LpVariable('Min_MET_Coverage', lowBound=0)
+    max_coverage = pulp.LpVariable('Max_MET_Coverage', lowBound=0)
+    
+    # Set min and max coverage bounds
+    for day in days:
+        global_model += met_day_coverage[day] >= min_coverage
+        global_model += met_day_coverage[day] <= max_coverage
+    
+    # Objective: minimize the difference between max and min coverage
+    # This encourages even spread while still meeting needs
+    global_model += (max_coverage - min_coverage) - 0.01 * pulp.lpSum(
+        met_day_coverage[day] * day_requirements[day] for day in days
+    )
+    
+    # Solve
+    try:
+        solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=60)  # 1 minute time limit
+        status = global_model.solve(solver)
+        
+        if status != pulp.LpStatusOptimal and status != pulp.LpStatusFeasible:
+            logger.warning(f"Global MET optimization failed with status: {pulp.LpStatus[status]}")
+            # Fall back to individual pattern optimization
+            return fallback_optimize_met_distribution(pattern_staff_dict, shift, day_requirements)
+            
+        # Create results from the global model
+        shift_letter = 'D' if shift == 'Day' else 'N'
+        
+        for pattern_code in pattern_met_vars:
+            for day_idx in pattern_met_vars[pattern_code]:
+                staff = int(pulp.value(pattern_met_vars[pattern_code][day_idx]))
+                if staff > 0:
+                    all_met_results.append({
+                        'Pattern': f'{shift_letter}{pattern_code}{day_idx}',
+                        'Shift': shift,
+                        'Base_Pattern': pattern_code,
+                        'MET_Day': day_map[day_idx],
+                        'Employees': staff
+                    })
+    except Exception as e:
+        logger.error(f"Error in global MET optimization: {str(e)}")
+        # Fall back to individual pattern optimization
+        return fallback_optimize_met_distribution(pattern_staff_dict, shift, day_requirements)
+    
+    return pd.DataFrame(all_met_results)
+
+def fallback_optimize_met_distribution(pattern_staff_dict: Dict[str, int], shift: str, day_requirements: Dict[str, int]) -> pd.DataFrame:
+    """
+    Fallback method that optimizes MET distribution pattern by pattern if the global approach fails.
+    """
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    day_map = {1: 'Sun', 2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat'}
+    day_to_idx = {day: i for i, day in enumerate(days)}
+    
+    pattern_off_days = {
+        'A': ['Thu', 'Fri', 'Sat'],  # Sun-Wed pattern, off Thu-Sat
+        'B': ['Sun', 'Mon', 'Tue'],  # Thu-Sat pattern, off Sun-Tue
+        'C': ['Fri', 'Sat'],         # Mon-Thu pattern, off Fri-Sat
+        'D': ['Sun', 'Mon'],         # Tue-Fri pattern, off Sun-Mon
+        'E': ['Sat'],                # Mon-Fri pattern, off Sat
+        'F': ['Sat'],                # Mon-Fri pattern, off Sat
+        'G': ['Tue', 'Wed', 'Sat'],  # Sun-Mon, Thu-Fri pattern
+        'H': ['Tue', 'Fri', 'Sat'],  # Sun-Mon, Wed-Thu pattern
+        'I': ['Mon', 'Fri', 'Sat'],  # Sun, Tue-Thu pattern
+        'J': ['Tue', 'Fri'],         # Mon, Wed-Thu, Sat pattern
+        'K': ['Wed', 'Sat'],         # Mon-Tue, Thu-Fri pattern
+        'L': ['Wed', 'Thu', 'Fri'],  # Sun-Tue, Sat pattern
+        'M': ['Sun', 'Mon', 'Fri'],  # Tue-Thu, Sat pattern
+        'N': ['Mon', 'Tue', 'Wed'],  # Sun, Thu-Sat pattern
+        'O': ['Tue', 'Wed', 'Thu'],  # Sun-Mon, Fri-Sat pattern
+        'P': ['Thu', 'Fri', 'Sat'],  # Sun-Wed pattern
+        'Q': ['Fri', 'Sat'],         # Mon-Thu pattern
+        'R': ['Wed', 'Sat'],         # Mon-Tue, Thu-Fri pattern
+        'S': ['Mon', 'Tue'],         # Sun, Wed-Fri pattern
+        'T': ['Thu', 'Fri', 'Sat'],  # Sun-Wed pattern
+        'U': ['Tue', 'Wed', 'Sat'],  # Sun-Mon, Thu-Fri pattern
+        'V': ['Thu', 'Fri'],         # Sun, Tue-Wed, Sat pattern
+        'W': ['Wed', 'Thu', 'Sat'],  # Sun-Tue, Fri pattern
+        'X': ['Tue', 'Wed', 'Sun'],  # Mon, Thu-Sat pattern
+        'Y': ['Sun', 'Mon', 'Fri'],  # Tue-Thu, Sat pattern
+        'Z': ['Thu', 'Sat'],         # Mon-Wed, Fri pattern
+        '1': ['Thu', 'Sat'],         # Mon-Wed, Fri pattern
+        '2': ['Tue', 'Wed', 'Fri'],  # Sun-Mon, Thu, Sat pattern
+        '3': ['Thu', 'Fri'],         # Mon-Wed, Sat pattern
+        '4': ['Tue', 'Sat'],         # Mon, Wed-Fri pattern
+        '5': ['Wed', 'Fri', 'Sat'],  # Sun-Tue, Thu pattern
+    }
+    
+    all_met_results = []
+    
+    for pattern_code, staff_count in pattern_staff_dict.items():
+        if staff_count <= 0:
+            continue
+            
+        off_days = pattern_off_days.get(pattern_code, [])
+        if not off_days:
+            continue
+            
+        model = pulp.LpProblem(f"{shift}_{pattern_code}_MET_Distribution", pulp.LpMinimize)
+        
+        met_vars = {
+            day_to_idx[day] + 1: pulp.LpVariable(f'MET_{pattern_code}_{day}', 
+                                   lowBound=0,
+                                   upBound=staff_count,
+                                   cat='Integer')
+            for day in off_days
+        }
+        
+        model += pulp.lpSum(met_vars.values()) == staff_count
+        
+        if len(met_vars) > 1:
+            max_diff = pulp.LpVariable(f'Max_Diff_{pattern_code}', lowBound=0)
+            avg_met = staff_count / len(met_vars)
+            
+            for day_idx in met_vars:
+                model += met_vars[day_idx] - avg_met <= max_diff
+                model += avg_met - met_vars[day_idx] <= max_diff
+            
+            objective_terms = [max_diff]
+            for day_idx in met_vars:
+                day_name = day_map[day_idx]
+                objective_terms.append(-0.1 * met_vars[day_idx] * day_requirements[day_name])
+            
+            model += pulp.lpSum(objective_terms)
+        else:
+            day_idx = list(met_vars.keys())[0]
+            model += met_vars[day_idx] == staff_count
+        
+        try:
+            status = model.solve(pulp.PULP_CBC_CMD(msg=0))
+            
+            if status != pulp.LpStatusOptimal:
+                logger.warning(f"MET optimization for {pattern_code} failed: {pulp.LpStatus[status]}")
+                continue
+                
+            shift_letter = 'D' if shift == 'Day' else 'N'
+            
+            for day_idx in met_vars:
+                staff = int(pulp.value(met_vars[day_idx]))
+                if staff > 0:
+                    all_met_results.append({
+                        'Pattern': f'{shift_letter}{pattern_code}{day_idx}',
+                        'Shift': shift,
+                        'Base_Pattern': pattern_code,
+                        'MET_Day': day_map[day_idx],
+                        'Employees': staff
+                    })
+        except Exception as e:
+            logger.error(f"Error optimizing MET for {pattern_code}: {str(e)}")
+    
+    return pd.DataFrame(all_met_results)
+
+def plot_met_distribution(met_df):
+    """
+    Plots the MET day distribution by day of week.
+    Shows how many employees are assigned to each MET day.
+    
+    Args:
+        met_df (pd.DataFrame): DataFrame containing the MET assignments
+    """
+    if met_df.empty:
+        return None
+        
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']  # Show all days
+    
+    # Create figure
+    fig = make_subplots(rows=1, cols=1, subplot_titles=['MET Day Distribution'])
+    
+    # Calculate MET distribution for day shift
+    day_met_data = []
+    for day in days:
+        day_met = met_df[
+            (met_df['Shift'] == 'Day') & 
+            (met_df['MET_Day'] == day)
+        ]['Employees'].sum()
+        day_met_data.append(day_met)
+    
+    # Calculate MET distribution for night shift
+    night_met_data = []
+    for day in days:
+        night_met = met_df[
+            (met_df['Shift'] == 'Night') & 
+            (met_df['MET_Day'] == day)
+        ]['Employees'].sum()
+        night_met_data.append(night_met)
+    
+    # Add day shift MET data
+    fig.add_trace(
+        go.Bar(x=days, y=day_met_data, name="Day Shift MET", marker_color='cornflowerblue')
+    )
+    
+    # Add night shift MET data
+    fig.add_trace(
+        go.Bar(x=days, y=night_met_data, name="Night Shift MET", marker_color='mediumseagreen')
+    )
+    
+    # Add total MET data
+    total_met_data = [day_met_data[i] + night_met_data[i] for i in range(len(days))]
+    fig.add_trace(
+        go.Scatter(x=days, y=total_met_data, name="Total MET", 
+                  line=dict(color='darkred', width=3), mode='lines+markers')
+    )
+    
+    fig.update_layout(
+        barmode='stack',
+        height=400,
+        title='MET Day Distribution Across Week',
+        xaxis_title='Day of Week',
+        yaxis_title='Number of Employees',
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5
+        )
+    )
+    return fig
+
+def plot_coverage(day_staffing, night_staffing, day_requirements, night_requirements, met_df=None):
+    """
+    Plots comprehensive coverage including regular staffing and MET assignments.
+    
+    Args:
+        day_staffing: Regular day shift staffing levels
+        night_staffing: Regular night shift staffing levels
+        day_requirements: Day shift requirements
+        night_requirements: Night shift requirements
+        met_df: DataFrame with MET assignments (optional)
+    """
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    
+    fig = make_subplots(rows=2, cols=1, 
+                        subplot_titles=('Day Shift Coverage', 'Night Shift Coverage'),
+                        vertical_spacing=0.12,
+                        row_heights=[0.5, 0.5])
+    
+    # Calculate MET availablity by day if provided
+    day_met = {day: 0 for day in days}
+    night_met = {day: 0 for day in days}
+    
+    if met_df is not None and not met_df.empty:
+        for day in days:
+            day_met[day] = met_df[
+                (met_df['Shift'] == 'Day') & 
+                (met_df['MET_Day'] == day)
+            ]['Employees'].sum()
+            
+            night_met[day] = met_df[
+                (met_df['Shift'] == 'Night') & 
+                (met_df['MET_Day'] == day)
+            ]['Employees'].sum()
+    
+    # Day shift - Requirements
+    fig.add_trace(
+        go.Bar(x=days, y=[day_requirements[day] for day in days], 
+               name="Required", marker_color='indianred',
+               width=0.4, offset=-0.3),
+        row=1, col=1
+    )
+    
+    # Day shift - Regular staffing
+    fig.add_trace(
+        go.Bar(x=days, y=[day_staffing[day] for day in days], 
+               name="Regular", marker_color='royalblue',
+               width=0.4, offset=0.1),
+        row=1, col=1
+    )
+    
+    # Day shift - MET availability
+    if met_df is not None:
+        fig.add_trace(
+            go.Bar(x=days, y=[day_met[day] for day in days], 
+                   name="MET Available", marker_color='forestgreen',
+                   width=0.15, offset=0.525),
+            row=1, col=1
+        )
+    
+    # Night shift - Requirements
+    fig.add_trace(
+        go.Bar(x=days, y=[night_requirements[day] for day in days], 
+               name="Required", marker_color='indianred',
+               width=0.4, offset=-0.3, showlegend=False),
+        row=2, col=1
+    )
+    
+    # Night shift - Regular staffing
+    fig.add_trace(
+        go.Bar(x=days, y=[night_staffing[day] for day in days], 
+               name="Regular", marker_color='royalblue',
+               width=0.4, offset=0.1, showlegend=False),
+        row=2, col=1
+    )
+    
+    # Night shift - MET availability
+    if met_df is not None:
+        fig.add_trace(
+            go.Bar(x=days, y=[night_met[day] for day in days], 
+                   name="MET Available", marker_color='forestgreen',
+                   width=0.15, offset=0.525, showlegend=False),
+            row=2, col=1
+        )
+    
+    # Add total capacity (Regular + MET) lines
+    if met_df is not None:
+        day_total = [day_staffing[day] + day_met[day] for day in days]
+        night_total = [night_staffing[day] + night_met[day] for day in days]
+        
+        fig.add_trace(
+            go.Scatter(x=days, y=day_total, name="Max Capacity", 
+                       line=dict(color='darkgreen', width=2, dash='dot')),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(x=days, y=night_total, name="Max Capacity", 
+                       line=dict(color='darkgreen', width=2, dash='dot'),
+                       showlegend=False),
+            row=2, col=1
+        )
+    
+    # Update layout
+    fig.update_layout(
+        height=800,
+        barmode='group',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(t=100)
+    )
+    
+    # Update axes for better readability
+    fig.update_xaxes(tickangle=0)
+    fig.update_yaxes(title_text="Employees", row=1, col=1)
+    fig.update_yaxes(title_text="Employees", row=2, col=1)
+    
+    return fig
+
+def create_summary_tables(results_df, day_staffing, night_staffing, 
+                          day_requirements, night_requirements, met_df):
+    """
+    Creates comprehensive summary tables for staffing results.
+    
+    Returns:
+        Tuple of DataFrames: (staffing_summary, pattern_summary, met_summary)
+    """
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    
+    # 1. Daily Staffing Summary
+    staffing_data = []
+    
+    # Calculate MET availability by day
+    day_met = {day: 0 for day in days}
+    night_met = {day: 0 for day in days}
+    
+    if not met_df.empty:
+        for day in days:
+            day_met[day] = met_df[
+                (met_df['Shift'] == 'Day') & 
+                (met_df['MET_Day'] == day)
+            ]['Employees'].sum()
+            
+            night_met[day] = met_df[
+                (met_df['Shift'] == 'Night') & 
+                (met_df['MET_Day'] == day)
+            ]['Employees'].sum()
+    
+    for day in days:
+        # Calculate percentages as numbers first, format as strings later
+        day_coverage_pct = round((day_staffing[day] / day_requirements[day]) * 100, 1)
+        day_max_coverage_pct = round(((day_staffing[day] + day_met[day]) / day_requirements[day]) * 100, 1)
+        night_coverage_pct = round((night_staffing[day] / night_requirements[day]) * 100, 1)
+        night_max_coverage_pct = round(((night_staffing[day] + night_met[day]) / night_requirements[day]) * 100, 1)
+        
+        day_row = {
+            'Day': day,
+            'Day Required': day_requirements[day],
+            'Day Regular': round(day_staffing[day], 1),
+            'Day MET Available': day_met[day],
+            'Day Potential Coverage': round(day_staffing[day] + day_met[day], 1),
+            'Day Coverage %': f"{day_coverage_pct}%",
+            'Day Max Coverage %': f"{day_max_coverage_pct}%",
+            'Night Required': night_requirements[day],
+            'Night Regular': round(night_staffing[day], 1),
+            'Night MET Available': night_met[day],
+            'Night Potential Coverage': round(night_staffing[day] + night_met[day], 1),
+            'Night Coverage %': f"{night_coverage_pct}%",
+            'Night Max Coverage %': f"{night_max_coverage_pct}%"
+        }
+        staffing_data.append(day_row)
+    
+    staffing_summary = pd.DataFrame(staffing_data)
+    
+    # 2. Pattern Distribution Summary
+    pattern_summary = results_df.groupby(['Shift', 'Base_Pattern']).agg({
+        'Employees': 'sum'
+    }).reset_index()
+    
+    # Add percentage column (numeric first, then format)
+    total_employees = results_df['Employees'].sum()
+    pattern_summary['Percentage_Value'] = (pattern_summary['Employees'] / total_employees * 100).round(1)
+    pattern_summary['Percentage'] = pattern_summary['Percentage_Value'].apply(lambda x: f"{x}%")
+    pattern_summary = pattern_summary.drop('Percentage_Value', axis=1)
+    
+    # 3. MET Distribution By Pattern and Day
+    if not met_df.empty:
+        # Get available days in the pivot table
+        met_pivot = met_df.pivot_table(
+            index=['Shift', 'Base_Pattern'],
+            columns='MET_Day',
+            values='Employees',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index()
+        
+        # Handle missing columns - only include days that exist in the data
+        available_days = [day for day in days if day in met_pivot.columns]
+        
+        # Add total column
+        met_pivot['Total'] = met_pivot[available_days].sum(axis=1)
+        
+        # Sort days in correct order, only include available days
+        available_columns = ['Shift', 'Base_Pattern'] + available_days + ['Total']
+        met_summary = met_pivot[available_columns]
+    else:
+        met_summary = pd.DataFrame(columns=['Shift', 'Base_Pattern'] + days + ['Total'])
+    
+    return staffing_summary, pattern_summary, met_summary
+
+def create_ctp_targets_chart(results_df, met_df):
+    """
+    Creates a chart showing CTP (Capacity Targets Plan) - what percentage of 
+    total headcount should be hired to each MET level cohort.
+    
+    Args:
+        results_df: DataFrame with base pattern results
+        met_df: DataFrame with MET assignments
+    
+    Returns:
+        A Plotly figure object
+    """
+    if met_df.empty:
+        return None
+        
+    # Create the CTP targets dataframe
+    total_hc = results_df['Employees'].sum()
+    
+    # First, group by shift and base pattern
+    base_pattern_counts = results_df.groupby(['Shift', 'Base_Pattern'])['Employees'].sum().reset_index()
+    # Use the actual pattern code (e.g., DA, NB) for display
+    base_pattern_counts['Display_Code'] = base_pattern_counts.apply(
+        lambda row: ('D' if row['Shift'] == 'Day' else 'N') + row['Base_Pattern'], 
+        axis=1
+    )
+    base_pattern_counts['Percentage'] = (base_pattern_counts['Employees'] / total_hc * 100).round(1)
+    
+    # Now handle MET cohorts
+    met_cohorts = met_df.copy()
+    # Use the actual pattern code in format (e.g., DA5, NB2)
+    met_cohorts['Display_Code'] = met_cohorts['Pattern']
+    met_cohort_counts = met_cohorts.groupby('Display_Code').agg({
+        'Employees': 'sum',
+        'Shift': 'first',
+        'Base_Pattern': 'first',
+        'MET_Day': 'first'
+    }).reset_index()
+    met_cohort_counts['Percentage'] = (met_cohort_counts['Employees'] / total_hc * 100).round(1)
+    
+    # Create the visualization
+    fig = go.Figure()
+    
+    # Add a bar for each shift-pattern combination
+    for shift in ['Day', 'Night']:
+        shift_data = base_pattern_counts[base_pattern_counts['Shift'] == shift]
+        
+        # Sort by pattern code
+        shift_data = shift_data.sort_values('Base_Pattern')
+        
+        # Add the base patterns
+        fig.add_trace(go.Bar(
+            x=shift_data['Display_Code'],
+            y=shift_data['Percentage'],
+            name=f"{shift} Base Patterns",
+            marker_color='royalblue' if shift == 'Day' else 'mediumseagreen',
+            text=[f"{p:.1f}%" for p in shift_data['Percentage']],
+            textposition='auto',
+            hovertemplate="<b>%{x}</b><br>Headcount: %{customdata}<br>Percentage: %{y:.1f}%<extra></extra>",
+            customdata=shift_data['Employees']
+        ))
+    
+    # Add a second trace for MET cohorts
+    for shift in ['Day', 'Night']:
+        shift_met_data = met_cohort_counts[met_cohort_counts['Shift'] == shift]
+        
+        # Sort by pattern and MET day
+        shift_met_data = shift_met_data.sort_values(['Base_Pattern', 'MET_Day'])
+        
+        if not shift_met_data.empty:
+            fig.add_trace(go.Bar(
+                x=shift_met_data['Display_Code'],
+                y=shift_met_data['Percentage'],
+                name=f"{shift} MET Cohorts",
+                marker_color='cornflowerblue' if shift == 'Day' else 'lightgreen',
+                text=[f"{p:.1f}%" for p in shift_met_data['Percentage']],
+                textposition='auto',
+                hovertemplate="<b>%{x}</b><br>Headcount: %{customdata}<br>Percentage: %{y:.1f}%<extra></extra>",
+                customdata=shift_met_data['Employees']
+            ))
+    
+    # Update layout for better readability
+    fig.update_layout(
+        title='CTP Targets: Percentage of Total Headcount by Pattern and MET Cohort',
+        xaxis_title='Pattern Code',
+        yaxis_title='Percentage of Total Headcount',
+        height=600,
+        barmode='group',
+        bargap=0.15,
+        bargroupgap=0.1,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5
+        ),
+        yaxis=dict(
+            ticksuffix="%",
+            range=[0, max(base_pattern_counts['Percentage'].max(), 
+                          met_cohort_counts['Percentage'].max() if not met_cohort_counts.empty else 0) * 1.1]
+        ),
+        margin=dict(l=50, r=50, t=100, b=100)
+    )
+    
+    # Add annotations for better clarity
+    fig.add_annotation(
+        x=0.5, y=1.15,
+        xref="paper", yref="paper",
+        text="<b>Hire these percentages of total headcount to each pattern/cohort</b>",
+        showarrow=False,
+        font=dict(size=14)
+    )
+    
+    return fig
+
+def main():
+    """
+    Main function that sets up the Streamlit interface and handles the optimization process.
+    """
+    st.set_page_config(layout="wide", page_title="Staffing Pattern Optimizer", page_icon="📊")
+    
+    st.title("Enhanced Staffing Pattern Optimizer")
+    
+    # Define days list at the start of main
+    days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    
+    try:
+        patterns_df = create_patterns_df()
+        
+        st.sidebar.title("Configuration")
+        
+        # Add cost configuration section
+        st.sidebar.subheader("Cost Configuration")
+        
+        # Day shift weekend differentials
+        st.sidebar.write("Day Shift Weekend Differentials")
+        day_0_weekend = st.sidebar.number_input("0 Weekend Days", min_value=0.0, value=0.0, step=0.05)
+        day_1_weekend = st.sidebar.number_input("1 Weekend Day", min_value=0.0, value=0.1, step=0.05)
+        day_2_weekend = st.sidebar.number_input("2 Weekend Days", min_value=0.0, value=0.2, step=0.05)
+        
+        # Night shift weekend differentials
+        st.sidebar.write("Night Shift Weekend Differentials")
+        night_0_weekend = st.sidebar.number_input("0 Weekend Days (Night)", min_value=0.0, value=0.2, step=0.05)
+        night_1_weekend = st.sidebar.number_input("1 Weekend Day (Night)", min_value=0.0, value=0.3, step=0.05)
+        night_2_weekend = st.sidebar.number_input("2 Weekend Days (Night)", min_value=0.0, value=0.4, step=0.05)
+        night_3_weekend = st.sidebar.number_input("3 Weekend Days (Night)", min_value=0.0, value=0.5, step=0.05)
+        
+        # Update cost multipliers based on settings
+        patterns_df['Cost_Multiplier'] = patterns_df.apply(lambda row:
+            (1.0 + {
+                '0': day_0_weekend if row['Shift'] == 'Day' else night_0_weekend,
+                '1': day_1_weekend if row['Shift'] == 'Day' else night_1_weekend,
+                '2': day_2_weekend if row['Shift'] == 'Day' else night_2_weekend,
+                '3': night_3_weekend if row['Shift'] == 'Night' else 0.0
+            }[row['Weekend_Category']]),
+            axis=1)
+            
+        # Display current cost structure summary
+        st.sidebar.subheader("Current Cost Structure")
+        
+        # Create summary tables for day and night shifts
+        day_summary = patterns_df[patterns_df['Shift'] == 'Day'].groupby('Weekend_Category').agg({
+            'Pattern': 'count',
+            'Cost_Multiplier': 'first'
+        }).reset_index()
+        day_summary['Weekend_Days'] = day_summary['Weekend_Category'].apply(lambda x: f"{x} weekend days")
+        day_summary['Cost'] = day_summary['Cost_Multiplier'].apply(lambda x: f"{x:.2f}x base rate")
+        
+        night_summary = patterns_df[patterns_df['Shift'] == 'Night'].groupby('Weekend_Category').agg({
+            'Pattern': 'count',
+            'Cost_Multiplier': 'first'
+        }).reset_index()
+        night_summary['Weekend_Days'] = night_summary['Weekend_Category'].apply(lambda x: f"{x} weekend days")
+        night_summary['Cost'] = night_summary['Cost_Multiplier'].apply(lambda x: f"{x:.2f}x base rate")
+        
+        # Display summaries
+        st.sidebar.write("**Day Shift Patterns**")
+        st.sidebar.dataframe(day_summary[['Weekend_Days', 'Pattern', 'Cost']], hide_index=True)
+        
+        st.sidebar.write("**Night Shift Patterns**")
+        st.sidebar.dataframe(night_summary[['Weekend_Days', 'Pattern', 'Cost']], hide_index=True)
+        
+        st.sidebar.info("""
+        Note: 
+        - Day shifts consider Sat/Sun as weekends
+        - Night shifts consider Fri/Sat/Sun as weekends
+        - MET days add 50% to the base rate
+        """)
+        
+        filter_type = st.sidebar.radio(
+            "Select Pattern Type",
+            ["All patterns", "4-day patterns", "5-day patterns", "Custom selection"]
+        )
+        
+        available_patterns = filter_patterns(patterns_df, filter_type)
+        
+        if filter_type == "Custom selection":
+            shift_type = st.sidebar.radio(
+                "Select Shift Type",
+                ["All", "Day", "Night"]
+            )
+            if shift_type != "All":
+                available_patterns = [p for p in available_patterns 
+                                    if patterns_df[patterns_df['Pattern'] == p]['Shift'].iloc[0] == shift_type]
+            
+            selected_patterns = st.sidebar.multiselect(
+                "Select patterns:",
+                available_patterns,
+                default=available_patterns[:5]
+            )
+        else:
+            selected_patterns = available_patterns
+        
+        optimize_cost = st.sidebar.checkbox("Optimize for Cost", value=True)
+        
+        if optimize_cost:
+            st.sidebar.info("""
+            Cost Factors:
+            - Base rate varies by shift type and weekend days worked
+            - MET day: +50% (overtime rate)
+            """)
+        
+        if st.sidebar.checkbox("Show Pattern Details"):
+            pattern_details = patterns_df[patterns_df['Pattern'].isin(selected_patterns)].copy()
+            days_order = ['Pattern', 'Shift', 'Base_Pattern'] + days + ['Days', 'Weekend_Days']
+            st.sidebar.dataframe(pattern_details[days_order])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Staffing Requirements")
+            
+            req_tab1, req_tab2 = st.tabs(["Day Shift", "Night Shift"])
+            
+            with req_tab1:
+                uniform_day = st.checkbox("Use uniform day shift staffing")
+                if uniform_day:
+                    day_value = st.number_input("Day shift requirement", min_value=0, value=10)
+                    day_req = {day: day_value for day in days}
+                else:
+                    cols = st.columns(7)
+                    day_req = {}
+                    for i, day in enumerate(days):
+                        with cols[i]:
+                            day_req[day] = st.number_input(day, min_value=0, value=10, key=f"day_{day}")
+            
+            with req_tab2:
+                uniform_night = st.checkbox("Use uniform night shift staffing")
+                if uniform_night:
+                    night_value = st.number_input("Night shift requirement", min_value=0, value=8)
+                    night_req = {day: night_value for day in days}
+                else:
+                    cols = st.columns(7)
+                    night_req = {}
+                    for i, day in enumerate(days):
+                        with cols[i]:
+                            night_req[day] = st.number_input(day, min_value=0, value=8, key=f"night_{day}")
+        
+        with col2:
+            st.subheader("Optimization Controls")
+            st.write("Press the button below to run the optimization and generate staffing results.")
+            optimize_button = st.button("Optimize Staffing", use_container_width=True)
+            st.info("This will run a two-phase optimization process: \n1. Optimize base staffing patterns\n2. Distribute MET assignments across days for maximum flexibility")
+        
+        if optimize_button:
+            if not selected_patterns:
+                st.error("Please select at least one pattern.")
+                return
+                
+            try:
+                # Validate requirements before optimization
+                validate_requirements(day_req, night_req)
+                
+                # Phase 1: Optimize base patterns
+                with st.spinner('Phase 1: Optimizing base staffing patterns...'):
+                    results_df, day_staffing, night_staffing = optimize_staffing(
+                        patterns_df, selected_patterns, day_req, night_req, optimize_cost
+                    )
+                
+                if not results_df.empty:
+                    st.subheader("Phase 1: Base Pattern Results")
+                    
+                    total_employees = results_df['Employees'].sum()
+                    
+                    if total_employees > 0:
+                        # Store original numeric percentage for calculations
+                        results_df['Percentage_Value'] = (results_df['Employees'] / total_employees * 100).round(1)
+                        # Add formatted percentage for display
+                        results_df['Percentage'] = results_df['Percentage_Value'].apply(lambda x: f"{x}%")
+                        # Remove numeric percentage to avoid confusion
+                        results_df = results_df.drop('Percentage_Value', axis=1)
+                        
+                        metric_cols = st.columns(3)
+                        with metric_cols[0]:
+                            st.metric("Total Employees", int(total_employees))
+                        with metric_cols[1]:
+                            day_employees = results_df[results_df['Shift'] == 'Day']['Employees'].sum()
+                            day_percentage = (day_employees/total_employees*100) if total_employees > 0 else 0
+                            st.metric("Day Shift", f"{int(day_employees)} ({day_percentage:.1f}%)")
+                        with metric_cols[2]:
+                            night_employees = results_df[results_df['Shift'] == 'Night']['Employees'].sum()
+                            night_percentage = (night_employees/total_employees*100) if total_employees > 0 else 0
+                            st.metric("Night Shift", f"{int(night_employees)} ({night_percentage:.1f}%)")
+                        
+                        # Display base pattern distribution
+                        st.subheader("Base Pattern Distribution")
+                        display_cols = ['Pattern', 'Shift', 'Base_Pattern', 'Employees', 'Percentage'] + days
+                        st.dataframe(results_df[display_cols], use_container_width=True)
+                        
+                        # Phase 2: Optimize MET distribution for all patterns
+                        st.subheader("Phase 2: MET Distribution")
+                        
+                        # Group by shift and pattern
+                        day_patterns = {}
+                        night_patterns = {}
+                        
+                        for _, row in results_df.iterrows():
+                            if row['Shift'] == 'Day' and row['Employees'] > 0:
+                                day_patterns[row['Base_Pattern']] = int(row['Employees'])
+                            elif row['Shift'] == 'Night' and row['Employees'] > 0:
+                                night_patterns[row['Base_Pattern']] = int(row['Employees'])
+                        
+                        met_df = pd.DataFrame()  # Default empty
+                        
+                        # Optimize MET for day shift patterns
+                        if day_patterns:
+                            with st.spinner('Optimizing Day Shift MET distribution...'):
+                                day_met_df = optimize_met_distribution(day_patterns, 'Day', day_req)
+                                if not day_met_df.empty:
+                                    met_df = pd.concat([met_df, day_met_df], ignore_index=True)
+                        
+                        # Optimize MET for night shift patterns
+                        if night_patterns:
+                            with st.spinner('Optimizing Night Shift MET distribution...'):
+                                night_met_df = optimize_met_distribution(night_patterns, 'Night', night_req)
+                                if not night_met_df.empty:
+                                    met_df = pd.concat([met_df, night_met_df], ignore_index=True)
+                        
+                        # Create comprehensive summary tables
+                        try:
+                            staffing_summary, pattern_summary, met_summary = create_summary_tables(
+                                results_df, day_staffing, night_staffing, day_req, night_req, met_df
+                            )
+                            
+                            # ===== RESULTS SECTION =====
+                            st.header("Optimization Results")
+                            
+                            # Create tabs for different result views
+                            result_tabs = st.tabs([
+                                "1. Staffing Summary", 
+                                "2. Coverage Analysis", 
+                                "3. Pattern & MET Distribution",
+                                "4. CTP Targets"
+                            ])
+                            
+                            with result_tabs[0]:
+                                st.subheader("Comprehensive Staffing Summary")
+                                st.dataframe(staffing_summary, use_container_width=True)
+                            
+                            with result_tabs[1]:
+                                st.subheader("Coverage Analysis (Regular + MET)")
+                                fig = plot_coverage(day_staffing, night_staffing, day_req, night_req, met_df)
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            with result_tabs[2]:
+                                col1, col2 = st.columns([1, 1])
+                                with col1:
+                                    st.subheader("Pattern Distribution")
+                                    st.dataframe(pattern_summary, use_container_width=True)
+                                
+                                with col2:
+                                    if not met_df.empty:
+                                        st.subheader("MET Availability")
+                                        fig_met = plot_met_distribution(met_df)
+                                        st.plotly_chart(fig_met, use_container_width=True)
+                                
+                                # Detailed MET Distribution
+                                if not met_df.empty:
+                                    st.subheader("Detailed MET Assignment")
+                                    
+                                    met_tabs = st.tabs(["MET by Pattern & Day", "Raw MET Data"])
+                                    
+                                    with met_tabs[0]:
+                                        st.dataframe(met_summary, use_container_width=True)
+                                    
+                                    with met_tabs[1]:
+                                        # Sort by pattern and MET day for better readability
+                                        sorted_met = met_df.sort_values(['Shift', 'Base_Pattern', 'MET_Day'])
+                                        st.dataframe(sorted_met, use_container_width=True)
+                            
+                            with result_tabs[3]:
+                                st.subheader("CTP Targets")
+                                st.write("Percentage of total headcount that should be hired to each pattern and MET cohort.")
+                                
+                                ctp_fig = create_ctp_targets_chart(results_df, met_df)
+                                if ctp_fig:
+                                    st.plotly_chart(ctp_fig, use_container_width=True)
+                                else:
+                                    st.info("No MET assignments to display in CTP targets.")
+                                
+                                st.write("##### Hiring Targets")
+                                
+                                # Create a simplified version of the targets for easy reference
+                                if not met_df.empty:
+                                    # Base patterns (non-MET)
+                                    ctp_summary = results_df.groupby(['Shift', 'Base_Pattern'])['Employees'].sum().reset_index()
+                                    # Create the proper pattern code display (e.g., DA, NB)
+                                    ctp_summary['Display_Code'] = ctp_summary.apply(
+                                        lambda row: ('D' if row['Shift'] == 'Day' else 'N') + row['Base_Pattern'],
+                                        axis=1
+                                    )
+                                    ctp_summary['Percentage_Value'] = (ctp_summary['Employees'] / total_employees * 100).round(1)
+                                    ctp_summary['Percentage'] = ctp_summary['Percentage_Value'].apply(lambda x: f"{x}%")
+                                    ctp_summary.drop('Percentage_Value', axis=1, inplace=True)
+                                    ctp_summary['Category'] = "Base Pattern"
+                                    
+                                    # MET cohorts - use the pattern directly from met_df (already in proper format)
+                                    met_summary = met_df.groupby(['Pattern', 'Shift', 'Base_Pattern', 'MET_Day'])['Employees'].sum().reset_index()
+                                    met_summary['Display_Code'] = met_summary['Pattern']  # Already in format DA5, NB2 etc.
+                                    met_summary['Percentage_Value'] = (met_summary['Employees'] / total_employees * 100).round(1)
+                                    met_summary['Percentage'] = met_summary['Percentage_Value'].apply(lambda x: f"{x}%")
+                                    met_summary.drop('Percentage_Value', axis=1, inplace=True)
+                                    met_summary['Category'] = "MET Cohort"
+                                    
+                                    # Combine
+                                    full_ctp = pd.concat([ctp_summary, met_summary], ignore_index=True)
+                                    
+                                    # Display in a clean table with the correct code format
+                                    display_ctp = full_ctp[['Display_Code', 'Category', 'Employees', 'Percentage']]
+                                    display_ctp = display_ctp.sort_values(['Category', 'Display_Code'])
+                                    # Rename column for clarity
+                                    display_ctp = display_ctp.rename(columns={'Display_Code': 'Pattern Code'})
+                                    st.dataframe(display_ctp, use_container_width=True)
+                        except Exception as e:
+                            logger.error(f"Error creating summary tables: {str(e)}")
+                            st.error(f"Error creating summary tables: {str(e)}")
+                            
+                            # Still display base results
+                            st.subheader("Base Pattern Distribution")
+                            st.dataframe(results_df, use_container_width=True)
+                    else:
+                        st.error("No feasible solution found with current constraints.")
+                else:
+                    st.error("No feasible solution found with current constraints.")
+            except ValueError as ve:
+                st.error(f"Invalid input: {str(ve)}")
+            except Exception as e:
+                logger.error(f"Optimization error: {str(e)}", exc_info=True)
+                st.error(f"An error occurred during optimization: {str(e)}")
+                st.error("Please check the logs for more details.")
+    except Exception as e:
+        logger.error(f"Application error: {str(e)}", exc_info=True)
+        st.error("An unexpected error occurred. Please check the logs for more details.")
+
+if __name__ == "__main__":
+    main()

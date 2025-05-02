@@ -15,7 +15,7 @@ A comprehensive tool for optimizing workforce staffing patterns across multiple 
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.8+ (3.10 recommended)
 - Required packages listed in `requirements.txt`
 
 ### Installation
@@ -23,6 +23,16 @@ A comprehensive tool for optimizing workforce staffing patterns across multiple 
 ```bash
 # Clone this repository
 git clone https://github.com/lunchwolfjoe/staffing.git
+
+# Navigate to the project directory
+cd staffing
+
+# Create and activate a virtual environment (recommended)
+python -m venv venv
+# On Windows
+venv\Scripts\activate
+# On macOS/Linux
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -71,7 +81,28 @@ SiteA,DB,0700,80
 
 ## Deployment
 
-This application can be deployed on Streamlit Cloud or any Streamlit-compatible hosting service.
+### Local Deployment
+Run the app locally using the instructions in the Installation section.
+
+### Streamlit Cloud Deployment
+This application can be deployed on Streamlit Cloud:
+
+1. Push your code to a GitHub repository
+2. Go to [Streamlit Cloud](https://streamlit.io/cloud)
+3. Click "New app" and link to your repository
+4. Enter `staffing_optimizer.py` as the main file
+5. Choose Python 3.10
+6. Deploy!
+
+## Troubleshooting
+
+If you encounter dependency issues:
+
+1. **Missing Packages**: Make sure all dependencies are installed: `pip install -r requirements.txt`
+2. **Version Conflicts**: Try using Python 3.10 which is known to work with all dependencies
+3. **Platform Issues**: 
+   - On Windows, ensure you have Microsoft Visual C++ Build Tools installed
+   - On Linux, you may need to install additional system libraries: `apt-get install build-essential python3-dev`
 
 ## License
 

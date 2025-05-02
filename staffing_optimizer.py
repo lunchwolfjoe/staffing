@@ -326,16 +326,14 @@ met_df = pd.DataFrame()  # Initialize empty DataFrame for MET distribution
 # Shift timing configuration
 DEFAULT_SITE_SCHEDULE = {
     'day_shift': {
-        'valid_start_times': ['0500', '0600', '0700', '0800', '0900', '1000', '1100', '1200', '1300', '1400'],
+        'valid_start_times': ['0500', '0600', '0700', '0800', '0900'],
         'work_periods': [
             {'start': '0700', 'end': '0930'},
             {'start': '0945', 'end': '1200'},
-            {'start': '1230', 'end': '1430'},
-            {'start': '1445', 'end': '1730'}
+            {'start': '1230', 'end': '1430'}
         ],
         'paid_breaks': [
-            {'start': '0930', 'end': '0945'},
-            {'start': '1430', 'end': '1445'}
+            {'start': '0930', 'end': '0945'}
         ],
         'unpaid_breaks': [
             {'start': '1200', 'end': '1230'}
@@ -344,29 +342,27 @@ DEFAULT_SITE_SCHEDULE = {
         'unpaid_lunch_hours': 0.5
     },
     'night_shift': {
-        'valid_start_times': ['1500', '1600', '1700', '1800', '1900', '2000', '2100', '2200', '2300', '0000', '0100', '0200', '0300', '0400'],
+        'valid_start_times': ['1700', '1800', '1900', '2000', '2100'],
         'work_periods': [
-            {'start': '1500', 'end': '1730'},
-            {'start': '1745', 'end': '2000'},
-            {'start': '2030', 'end': '2230'},
-            {'start': '2245', 'end': '0100'}
+            {'start': '1900', 'end': '2130'},
+            {'start': '2145', 'end': '0000'},
+            {'start': '0030', 'end': '0230'}
         ],
         'paid_breaks': [
-            {'start': '1730', 'end': '1745'},
-            {'start': '2230', 'end': '2245'}
+            {'start': '2130', 'end': '2145'}
         ],
         'unpaid_breaks': [
-            {'start': '2000', 'end': '2030'}
+            {'start': '0000', 'end': '0030'}
         ],
         'shift_length_hours': 10,
         'unpaid_lunch_hours': 0.5
     }
 }
 
-# Default demand profile - percentage of daily total by hour within shift
+# Default demand profile - percentage of volume by hour
 DEFAULT_DEMAND_PROFILE = {
-    'day_shift': [0.05, 0.08, 0.12, 0.15, 0.15, 0.13, 0.12, 0.10, 0.07, 0.03],  # 10 hours (0500-1500)
-    'night_shift': [0.05, 0.10, 0.15, 0.15, 0.15, 0.12, 0.10, 0.08, 0.06, 0.04]  # 10 hours (1500-0100)
+    'day_shift': [0.08, 0.12, 0.14, 0.13, 0.12, 0.11, 0.10, 0.08, 0.07, 0.05],  # 0500 - 1400
+    'night_shift': [0.06, 0.08, 0.09, 0.12, 0.14, 0.15, 0.13, 0.10, 0.08, 0.05]  # 1500 - 0000
 }
 
 # Utility functions for time handling
